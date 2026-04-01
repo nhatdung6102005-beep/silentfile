@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.MessageContent]
+  intents: [GatewayIntentBits.Guilds]
 });
 
 const DATA_FILE = './data.json';
@@ -19,6 +19,7 @@ function saveData() {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
+// commands
 const commands = [
   new SlashCommandBuilder()
     .setName('save')
@@ -27,6 +28,16 @@ const commands = [
       option.setName('name')
         .setDescription('Tên lưu')
         .setRequired(true)
+    )
+    .addAttachmentOption(option =>
+      option.setName('file')
+        .setDescription('File cần lưu')
+        .setRequired(false)
+    )
+    .addStringOption(option =>
+      option.setName('link')
+        .setDescription('Link cần lưu')
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -34,7 +45,7 @@ const commands = [
     .setDescription('Tải file đã lưu')
     .addStringOption(option =>
       option.setName('name')
-        .setDescription('Chọn file')
+        .setDescription('Tên file')
         .setRequired(true)
         .setAutocomplete(true)
     )
@@ -50,37 +61,44 @@ const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
   console.log('Commands registered');
 })();
 
+// autocomplete
 client.on('interactionCreate', async interaction => {
   if (interaction.isAutocomplete()) {
     const focused = interaction.options.getFocused();
     const choices = Object.keys(data);
-    const filtered = choices.filter(choice => choice.startsWith(focused));
+
+    const filtered = choices.filter(choice =>
+      choice.toLowerCase().includes(focused.toLowerCase())
+    );
 
     await interaction.respond(
-      filtered.map(choice => ({ name: choice, value: choice }))
+      filtered.slice(0, 25).map(choice => ({ name: choice, value: choice }))
     );
   }
 });
 
+// commands
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   const name = interaction.options.getString('name');
 
+  // SAVE
   if (interaction.commandName === 'save') {
-    const msg = await interaction.channel.messages.fetch({ limit: 1 });
-    const lastMsg = msg.first();
+
+    const file = interaction.options.getAttachment('file');
+    const link = interaction.options.getString('link');
 
     let content = null;
 
-    if (lastMsg.attachments.size > 0) {
-      content = lastMsg.attachments.first().url;
-    } else if (lastMsg.content.includes('http')) {
-      content = lastMsg.content;
+    if (file) {
+      content = file.url;
+    } else if (link) {
+      content = link;
     }
 
     if (!content) {
-      return interaction.reply('❌ Không tìm thấy file hoặc link');
+      return interaction.reply('❌ Bạn phải gửi file hoặc link');
     }
 
     data[name] = content;
@@ -89,6 +107,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply(`✅ Đã lưu: ${name}`);
   }
 
+  // DOWNLOAD
   if (interaction.commandName === 'download') {
     if (!data[name]) {
       return interaction.reply('❌ Không tìm thấy file');
@@ -101,6 +120,10 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply('❌ Không thể gửi DM (mở DM đi)');
     }
   }
+});
+
+client.once('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
 });
 
 client.login(process.env.TOKEN);
