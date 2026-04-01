@@ -1,6 +1,7 @@
 {
-  "name": "save-file-bot",
-  "version": "2.0.0",
+  "name": "save-file-bot-auto",
+  "version": "3.0.0",
+  "description": "Discord bot to save file links or URLs and DM them back with autocomplete",
   "main": "index.js",
   "type": "module",
   "scripts": {
