@@ -1,13 +1,8 @@
 import {
-  Client,
-  GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder
+  Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder
 } from 'discord.js';
 import fs from 'fs';
 import dotenv from 'dotenv';
-
 dotenv.config();
 
 const TOKEN = process.env.TOKEN;
@@ -23,248 +18,172 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent
   ]
 });
 
 let data = {};
 if (fs.existsSync(DATA_FILE)) {
-  try {
-    data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  } catch (error) {
-    console.error('Failed to read data.json:', error);
-    data = {};
-  }
+  try { data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
+  catch { data = {}; }
 }
 
 function saveData() {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
 }
 
+function sanitizeName(name) {
+  return name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+}
+
+function uniqueName(base) {
+  let name = base;
+  let i = 1;
+  while (data[name]) {
+    name = `${base}_${i++}`;
+  }
+  return name;
+}
+
+function nameFromUrl(url) {
+  try {
+    const u = new URL(url);
+    const last = u.pathname.split('/').filter(Boolean).pop();
+    return last ? last : 'link';
+  } catch {
+    return 'link';
+  }
+}
+
+async function findRecentUserContent(interaction) {
+  const msgs = await interaction.channel.messages.fetch({ limit: 15 });
+  for (const [, m] of msgs) {
+    if (m.author.id !== interaction.user.id) continue;
+    if (m.attachments.size > 0) {
+      const a = m.attachments.first();
+      return { type: 'file', url: a.url, name: a.name || 'file' };
+    }
+    const match = m.content.match(/https?:\/\/\S+/i);
+    if (match) {
+      return { type: 'link', url: match[0], name: nameFromUrl(match[0]) };
+    }
+  }
+  return null;
+}
+
 const commands = [
   new SlashCommandBuilder()
     .setName('save')
-    .setDescription('Lưu file hoặc link')
-    .addStringOption(option =>
-      option
-        .setName('name')
-        .setDescription('Tên lưu')
-        .setRequired(true)
-    )
-    .addAttachmentOption(option =>
-      option
-        .setName('file')
-        .setDescription('Chọn file trực tiếp nếu muốn')
-        .setRequired(false)
-    )
-    .addStringOption(option =>
-      option
-        .setName('link')
-        .setDescription('Nhập link trực tiếp nếu muốn')
-        .setRequired(false)
-    ),
+    .setDescription('Lưu file hoặc link (name không bắt buộc)')
+    .addStringOption(o => o.setName('name').setDescription('Tên lưu (optional)').setRequired(false))
+    .addAttachmentOption(o => o.setName('file').setDescription('Chọn file').setRequired(false))
+    .addStringOption(o => o.setName('link').setDescription('Nhập link').setRequired(false)),
 
   new SlashCommandBuilder()
     .setName('download')
-    .setDescription('Gửi file hoặc link đã lưu vào DM')
-    .addStringOption(option =>
-      option
-        .setName('name')
-        .setDescription('Tên file đã lưu')
-        .setRequired(true)
-        .setAutocomplete(true)
-    ),
+    .setDescription('Gửi lại file/link vào DM')
+    .addStringOption(o => o.setName('name').setDescription('Tên').setRequired(true).setAutocomplete(true)),
 
   new SlashCommandBuilder()
     .setName('list')
-    .setDescription('Xem danh sách tên đã lưu'),
+    .setDescription('Xem danh sách'),
 
   new SlashCommandBuilder()
     .setName('delete')
-    .setDescription('Xóa 1 mục đã lưu')
-    .addStringOption(option =>
-      option
-        .setName('name')
-        .setDescription('Tên cần xóa')
-        .setRequired(true)
-        .setAutocomplete(true)
-    )
+    .setDescription('Xóa mục')
+    .addStringOption(o => o.setName('name').setDescription('Tên').setRequired(true).setAutocomplete(true))
 ];
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
-  await rest.put(
-    Routes.applicationCommands(CLIENT_ID),
-    { body: commands.map(cmd => cmd.toJSON()) }
-  );
-  console.log('Slash commands registered.');
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands.map(c => c.toJSON()) });
+  console.log('Commands registered');
 }
 
-function extractFirstUrl(text) {
-  if (!text) return null;
-  const match = text.match(/https?:\/\/\S+/i);
-  return match ? match[0] : null;
-}
-
-async function findRecentUserContent(interaction) {
-  const messages = await interaction.channel.messages.fetch({ limit: 15 });
-
-  for (const [, msg] of messages) {
-    if (msg.author.id !== interaction.user.id) continue;
-    if (msg.id === interaction.id) continue;
-
-    if (msg.attachments.size > 0) {
-      const attachment = msg.attachments.first();
-      return {
-        type: 'file',
-        url: attachment.url,
-        originalName: attachment.name || 'unknown-file'
-      };
-    }
-
-    const foundUrl = extractFirstUrl(msg.content);
-    if (foundUrl) {
-      return {
-        type: 'link',
-        url: foundUrl,
-        originalName: foundUrl
-      };
-    }
-  }
-
-  return null;
-}
-
-client.on('interactionCreate', async interaction => {
+client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
-      const focused = interaction.options.getFocused().toLowerCase();
-      const choices = Object.keys(data).sort((a, b) => a.localeCompare(b));
-      const filtered = choices
-        .filter(name => name.toLowerCase().includes(focused))
+      const f = interaction.options.getFocused().toLowerCase();
+      const list = Object.keys(data)
+        .filter(n => n.toLowerCase().includes(f))
         .slice(0, 25)
-        .map(name => ({ name, value: name }));
-
-      await interaction.respond(filtered);
-      return;
+        .map(n => ({ name: n, value: n }));
+      return interaction.respond(list);
     }
 
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === 'save') {
-      const name = interaction.options.getString('name');
+      let name = interaction.options.getString('name');
       const file = interaction.options.getAttachment('file');
       const link = interaction.options.getString('link');
 
-      let saved = null;
+      let url = null;
+      let baseName = null;
 
       if (file) {
-        saved = {
-          url: file.url,
-          kind: 'file',
-          sourceName: file.name || 'uploaded-file'
-        };
+        url = file.url;
+        baseName = file.name || 'file';
       } else if (link) {
-        saved = {
-          url: link,
-          kind: 'link',
-          sourceName: link
-        };
+        url = link;
+        baseName = nameFromUrl(link);
       } else {
         const recent = await findRecentUserContent(interaction);
         if (recent) {
-          saved = {
-            url: recent.url,
-            kind: recent.type,
-            sourceName: recent.originalName
-          };
+          url = recent.url;
+          baseName = recent.name;
         }
       }
 
-      if (!saved) {
-        await interaction.reply({
-          content: '❌ Không tìm thấy file hoặc link.\n\nCách dùng:\n- `/save name:tên file:(chọn file)`\n- hoặc gửi file/link trước rồi chạy `/save name:tên`',
-          ephemeral: true
-        });
-        return;
+      if (!url) {
+        return interaction.reply({ content: '❌ Không tìm thấy file/link.\nGửi file trước hoặc dùng option file/link.', ephemeral: true });
       }
 
-      data[name] = {
-        url: saved.url,
-        kind: saved.kind,
-        sourceName: saved.sourceName,
-        savedBy: interaction.user.id,
-        savedAt: new Date().toISOString()
-      };
+      if (!name) {
+        name = sanitizeName(baseName);
+      }
+      name = uniqueName(name);
+
+      data[name] = { url, savedAt: new Date().toISOString(), by: interaction.user.id };
       saveData();
 
-      await interaction.reply(`✅ Đã lưu **${name}** (${saved.kind === 'file' ? 'file' : 'link'})`);
-      return;
+      return interaction.reply(`✅ Đã lưu: **${name}**`);
     }
 
     if (interaction.commandName === 'download') {
       const name = interaction.options.getString('name');
       const item = data[name];
-
-      if (!item) {
-        await interaction.reply({ content: '❌ Không tìm thấy mục đã lưu.', ephemeral: true });
-        return;
-      }
+      if (!item) return interaction.reply({ content: '❌ Không thấy', ephemeral: true });
 
       try {
         await interaction.user.send(`📁 **${name}**\n${item.url}`);
-        await interaction.reply({ content: '📩 Đã gửi qua DM.', ephemeral: true });
-      } catch (error) {
-        await interaction.reply({ content: '❌ Không gửi được DM. Hãy mở tin nhắn riêng với bot rồi thử lại.', ephemeral: true });
+        return interaction.reply({ content: '📩 Đã gửi DM', ephemeral: true });
+      } catch {
+        return interaction.reply({ content: '❌ Không gửi được DM', ephemeral: true });
       }
-      return;
     }
 
     if (interaction.commandName === 'list') {
-      const names = Object.keys(data).sort((a, b) => a.localeCompare(b));
-
-      if (names.length === 0) {
-        await interaction.reply({ content: '📂 Chưa có mục nào được lưu.', ephemeral: true });
-        return;
-      }
-
-      await interaction.reply({
-        content: `📂 Danh sách đã lưu (${names.length}):\n- ${names.join('\n- ')}`,
-        ephemeral: true
-      });
-      return;
+      const names = Object.keys(data);
+      if (!names.length) return interaction.reply({ content: '📂 Trống', ephemeral: true });
+      return interaction.reply({ content: `📂 (${names.length})\n- ` + names.join('\n- '), ephemeral: true });
     }
 
     if (interaction.commandName === 'delete') {
       const name = interaction.options.getString('name');
-
-      if (!data[name]) {
-        await interaction.reply({ content: '❌ Không tìm thấy mục để xóa.', ephemeral: true });
-        return;
-      }
-
+      if (!data[name]) return interaction.reply({ content: '❌ Không thấy', ephemeral: true });
       delete data[name];
       saveData();
-
-      await interaction.reply({ content: `🗑️ Đã xóa **${name}**`, ephemeral: true });
+      return interaction.reply({ content: `🗑️ Đã xóa **${name}**`, ephemeral: true });
     }
-  } catch (error) {
-    console.error('Interaction error:', error);
-
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: '❌ Bot gặp lỗi khi xử lý lệnh.', ephemeral: true });
+  } catch (e) {
+    console.error(e);
+    if (interaction.isRepliable() && !interaction.replied) {
+      await interaction.reply({ content: '❌ Lỗi xử lý', ephemeral: true });
     }
   }
 });
 
-client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-});
+client.once('ready', () => console.log(`Logged in as ${client.user.tag}`));
 
-registerCommands()
-  .then(() => client.login(TOKEN))
-  .catch(error => {
-    console.error('Startup error:', error);
-    process.exit(1);
-  });
+registerCommands().then(() => client.login(TOKEN));
